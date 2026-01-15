@@ -2,6 +2,11 @@ import * as vscode from 'vscode';
 import { SessionTreeProvider, SessionItem } from './sessionProvider';
 import { SessionRecovery } from './sessionRecovery';
 
+// Constants for session merging
+const MIN_SESSIONS_FOR_MERGE = 2;
+const SIMILARITY_DISPLAY_THRESHOLD = 0.3;
+const AUTO_PICK_THRESHOLD = 0.5;
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('Copilot Session Recovery is now active');
 
@@ -182,6 +187,177 @@ export function activate(context: vscode.ExtensionContext) {
                 });
                 vscode.window.showInformationMessage(`Backup saved to ${uri[0].fsPath}`);
             }
+        }),
+
+        vscode.commands.registerCommand('copilot-recovery.mergeSessions', async () => {
+            const sessions = await recovery.listSessions();
+            if (sessions.length < MIN_SESSIONS_FOR_MERGE) {
+                vscode.window.showInformationMessage(`Need at least ${MIN_SESSIONS_FOR_MERGE} sessions to merge`);
+                return;
+            }
+
+            // Step 1: Select target session
+            const targetItems = sessions.map(s => ({
+                label: s.title || 'Untitled',
+                description: `${s.sessionId.slice(0, 8)} - ${s._workspace}`,
+                detail: `State: ${getStateName(s.lastResponseState)}, Files: ${s.stats?.fileCount || 0}`,
+                session: s
+            }));
+
+            const targetSelected = await vscode.window.showQuickPick(targetItems, {
+                placeHolder: 'Select target session (sessions will be merged INTO this one)',
+                matchOnDescription: true,
+                matchOnDetail: true
+            });
+
+            if (!targetSelected) return;
+
+            // Step 2: Find similar sessions
+            const similarities = await recovery.findSimilarSessions(targetSelected.session.sessionId);
+            
+            // Step 3: Show multi-select for source sessions
+            const sourceItems = sessions
+                .filter(s => s.sessionId !== targetSelected.session.sessionId)
+                .map(s => {
+                    const similarity = similarities.find(sim => sim.session.sessionId === s.sessionId);
+                    const label = s.title || 'Untitled';
+                    const description = `${s.sessionId.slice(0, 8)} - ${s._workspace}`;
+                    
+                    let detail = `State: ${getStateName(s.lastResponseState)}, Files: ${s.stats?.fileCount || 0}`;
+                    if (similarity && similarity.score > SIMILARITY_DISPLAY_THRESHOLD) {
+                        detail += ` | 🎯 Match: ${(similarity.score * 100).toFixed(0)}% (${similarity.reasons.join(', ')})`;
+                    }
+                    
+                    return {
+                        label,
+                        description,
+                        detail,
+                        session: s,
+                        picked: similarity && similarity.score > AUTO_PICK_THRESHOLD
+                    };
+                });
+
+            const sourceSelected = await vscode.window.showQuickPick(sourceItems, {
+                placeHolder: 'Select source sessions to merge (can select multiple)',
+                canPickMany: true,
+                matchOnDescription: true,
+                matchOnDetail: true
+            });
+
+            if (!sourceSelected || sourceSelected.length === 0) return;
+
+            // Step 4: Show preview for each merge
+            let previewContent = `# Merge Preview\n\n`;
+            previewContent += `**Target:** ${targetSelected.session.title || 'Untitled'} (${targetSelected.session.sessionId.slice(0, 8)})\n\n`;
+            previewContent += `**Sources:** ${sourceSelected.length} session(s)\n\n---\n\n`;
+
+            for (const source of sourceSelected) {
+                const preview = await recovery.getMergePreview(source.session.sessionId, targetSelected.session.sessionId);
+                if (preview) {
+                    previewContent += `## Source: ${source.session.title || 'Untitled'}\n\n`;
+                    previewContent += `**Chat Messages:**\n`;
+                    previewContent += `- Source: ${preview.chatHistoryCount.source}\n`;
+                    previewContent += `- Target: ${preview.chatHistoryCount.target}\n`;
+                    previewContent += `- Merged Total: ${preview.chatHistoryCount.merged}\n\n`;
+                    
+                    previewContent += `**File Edits:**\n`;
+                    previewContent += `- Source: ${preview.fileEditsCount.source}\n`;
+                    previewContent += `- Target: ${preview.fileEditsCount.target}\n`;
+                    previewContent += `- Merged Total: ${preview.fileEditsCount.merged}\n\n`;
+                    
+                    if (preview.conflicts.length > 0) {
+                        previewContent += `**⚠️ Conflicts (${preview.conflicts.length}):**\n`;
+                        preview.conflicts.forEach(c => {
+                            previewContent += `- ${c}\n`;
+                        });
+                        previewContent += '\n';
+                    }
+                    
+                    previewContent += '---\n\n';
+                }
+            }
+
+            // Show preview
+            const doc = await vscode.workspace.openTextDocument({
+                content: previewContent,
+                language: 'markdown'
+            });
+            await vscode.window.showTextDocument(doc, { preview: true });
+
+            // Step 5: Confirm merge
+            const confirm = await vscode.window.showWarningMessage(
+                `Merge ${sourceSelected.length} session(s) into "${targetSelected.session.title || 'Untitled'}"?\n\nA backup will be created before merging.`,
+                { modal: true },
+                'Merge Sessions'
+            );
+
+            if (confirm !== 'Merge Sessions') return;
+
+            // Step 6: Select backup location
+            const backupUri = await vscode.window.showOpenDialog({
+                canSelectFolders: true,
+                canSelectFiles: false,
+                canSelectMany: false,
+                openLabel: 'Select Backup Folder'
+            });
+
+            if (!backupUri || !backupUri[0]) return;
+
+            // Step 7: Perform merge
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Merging sessions...',
+                cancellable: false
+            }, async (progress) => {
+                let successCount = 0;
+                const errors: string[] = [];
+
+                for (let i = 0; i < sourceSelected.length; i++) {
+                    const source = sourceSelected[i];
+                    progress.report({ 
+                        message: `Merging ${i + 1}/${sourceSelected.length}: ${source.session.title || 'Untitled'}`,
+                        increment: (100 / sourceSelected.length)
+                    });
+
+                    const result = await recovery.mergeSessions(
+                        source.session.sessionId,
+                        targetSelected.session.sessionId,
+                        backupUri[0].fsPath
+                    );
+
+                    if (result.success) {
+                        successCount++;
+                    } else {
+                        errors.push(`${source.session.title || 'Untitled'}: ${result.error}`);
+                    }
+                }
+
+                if (successCount > 0) {
+                    const message = `Successfully merged ${successCount}/${sourceSelected.length} session(s)`;
+                    if (errors.length > 0) {
+                        vscode.window.showWarningMessage(
+                            `${message}. ${errors.length} failed:\n${errors.join('\n')}`,
+                            'Reload Window'
+                        ).then(action => {
+                            if (action === 'Reload Window') {
+                                vscode.commands.executeCommand('workbench.action.reloadWindow');
+                            }
+                        });
+                    } else {
+                        vscode.window.showInformationMessage(
+                            `${message}. Reload VS Code to see the merged session.`,
+                            'Reload Window'
+                        ).then(action => {
+                            if (action === 'Reload Window') {
+                                vscode.commands.executeCommand('workbench.action.reloadWindow');
+                            }
+                        });
+                    }
+                    treeProvider.refresh();
+                } else {
+                    vscode.window.showErrorMessage(`Failed to merge sessions:\n${errors.join('\n')}`);
+                }
+            });
         }),
 
         vscode.commands.registerCommand('copilot-recovery.refresh', () => {
