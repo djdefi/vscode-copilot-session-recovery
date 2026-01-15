@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: vscode-extension/package-lock.json
+      
+      - name: Install dependencies
+        working-directory: vscode-extension
+        run: npm ci
+      
+      - name: Install vsce
+        run: npm install -g @vscode/vsce
+      
+      - name: Build VSIX package
+        working-directory: vscode-extension
+        run: vsce package --no-yarn
+      
+      - name: Get package version
+        id: package-version
+        working-directory: vscode-extension
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "vsix_name=copilot-session-recovery-$VERSION.vsix" >> $GITHUB_OUTPUT
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: vscode-extension/*.vsix
+          draft: false
+          prerelease: false
+          generate_release_notes: true
