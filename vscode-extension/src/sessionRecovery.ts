@@ -422,6 +422,13 @@ export class SessionRecovery {
     }
 
     /**
+     * Convert a file:// URI to a file path
+     */
+    private uriToPath(uri: string): string {
+        return decodeURIComponent(uri.replace('file://', '') || '');
+    }
+
+    /**
      * Calculate similarity between two strings using a simple approach
      */
     private calculateStringSimilarity(str1: string, str2: string): number {
@@ -484,7 +491,7 @@ export class SessionRecovery {
                 reasons.push('Overlapping timeframe');
             }
             
-            // Same workspace (30% weight)
+            // Different workspace (30% weight) - sessions split across workspaces are candidates
             if (targetSession._workspace !== session._workspace && targetSession._workspace && session._workspace) {
                 score += 0.3;
                 reasons.push(`Different workspaces: ${targetSession._workspace} vs ${session._workspace}`);
@@ -549,7 +556,7 @@ export class SessionRecovery {
             const entries = state.recentSnapshot?.entries || [];
             sourceFileCount = entries.length;
             entries.forEach((e: any) => {
-                const filePath = decodeURIComponent(e.resource?.replace('file://', '') || '');
+                const filePath = this.uriToPath(e.resource || '');
                 sourceFiles.add(filePath);
             });
         }
@@ -559,7 +566,7 @@ export class SessionRecovery {
             const entries = state.recentSnapshot?.entries || [];
             targetFileCount = entries.length;
             entries.forEach((e: any) => {
-                const filePath = decodeURIComponent(e.resource?.replace('file://', '') || '');
+                const filePath = this.uriToPath(e.resource || '');
                 targetFiles.add(filePath);
                 if (sourceFiles.has(filePath)) {
                     conflicts.push(`File exists in both sessions: ${filePath}`);
@@ -626,7 +633,8 @@ export class SessionRecovery {
                 // Deduplicate by request ID if present
                 const seenIds = new Set<string>();
                 const uniqueRequests = allRequests.filter(req => {
-                    const id = req.id || `${req.timestamp}_${req.message?.text?.substring(0, 20)}`;
+                    const textSample = req.message?.text?.substring(0, 20) || '';
+                    const id = req.id || `${req.timestamp}_${textSample}`;
                     if (seenIds.has(id)) {
                         return false;
                     }
@@ -668,15 +676,15 @@ export class SessionRecovery {
                     const fileMap = new Map<string, any>();
                     
                     targetEntries.forEach((entry: any) => {
-                        const filePath = decodeURIComponent(entry.resource?.replace('file://', '') || '');
+                        const filePath = this.uriToPath(entry.resource || '');
                         fileMap.set(filePath, entry);
                     });
                     
                     sourceEntries.forEach((entry: any) => {
-                        const filePath = decodeURIComponent(entry.resource?.replace('file://', '') || '');
+                        const filePath = this.uriToPath(entry.resource || '');
                         const existing = fileMap.get(filePath);
                         
-                        // Keep the entry with the newest hash (prefer source if different)
+                        // Prefer source entry if different hash (assuming source is more recent for merge)
                         if (!existing || entry.currentHash !== existing.currentHash) {
                             fileMap.set(filePath, entry);
                             
