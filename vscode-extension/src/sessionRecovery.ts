@@ -400,4 +400,104 @@ export class SessionRecovery {
             }
         }
     }
+
+    async backupAllSessions(outputDir: string, maxBackups: number = 10): Promise<number> {
+        if (!this.storagePath) {
+            throw new Error('VS Code storage not found');
+        }
+
+        // Create timestamped backup folder
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const backupDir = path.join(outputDir, `backup_${timestamp}`);
+        fs.mkdirSync(backupDir, { recursive: true });
+
+        // Get all sessions
+        const sessions = await this.listSessions();
+        
+        // Filter sessions with pending edits or error state
+        const sessionsToBackup = sessions.filter(
+            s => s.hasPendingEdits === true || s.lastResponseState === 3
+        );
+
+        let backedUpCount = 0;
+
+        for (const session of sessionsToBackup) {
+            try {
+                const sessionBackupDir = path.join(backupDir, session.sessionId.slice(0, 8));
+                fs.mkdirSync(sessionBackupDir, { recursive: true });
+
+                // Save metadata
+                fs.writeFileSync(
+                    path.join(sessionBackupDir, 'session_meta.json'),
+                    JSON.stringify(session, null, 2)
+                );
+
+                // Copy chat history
+                const chatFile = path.join(session._ws_dir || '', 'chatSessions', `${session.sessionId}.json`);
+                if (fs.existsSync(chatFile)) {
+                    fs.copyFileSync(chatFile, path.join(sessionBackupDir, 'chat_history.json'));
+                }
+
+                // Copy editing session
+                const editDir = path.join(session._ws_dir || '', 'chatEditingSessions', session.sessionId);
+                if (fs.existsSync(editDir)) {
+                    this.copyDir(editDir, path.join(sessionBackupDir, 'editing_session'));
+                }
+
+                // Copy workspace.json
+                const workspaceJson = path.join(session._ws_dir || '', 'workspace.json');
+                if (fs.existsSync(workspaceJson)) {
+                    fs.copyFileSync(workspaceJson, path.join(sessionBackupDir, 'workspace.json'));
+                }
+
+                backedUpCount++;
+            } catch (error) {
+                console.error(`Failed to backup session ${session.sessionId}:`, error);
+            }
+        }
+
+        // Rotate old backups
+        this.rotateBackups(outputDir, maxBackups);
+
+        return backedUpCount;
+    }
+
+    private rotateBackups(backupDir: string, maxBackups: number = 10): void {
+        if (!fs.existsSync(backupDir)) {
+            return;
+        }
+
+        // Get all backup folders sorted by creation time (oldest first)
+        const backups = fs.readdirSync(backupDir)
+            .filter(name => name.startsWith('backup_'))
+            .map(name => ({
+                name,
+                path: path.join(backupDir, name),
+                time: fs.statSync(path.join(backupDir, name)).ctimeMs
+            }))
+            .sort((a, b) => a.time - b.time);
+
+        // Delete oldest backups if we exceed maxBackups
+        while (backups.length > maxBackups) {
+            const oldest = backups.shift();
+            if (oldest) {
+                this.deleteDir(oldest.path);
+            }
+        }
+    }
+
+    private deleteDir(dirPath: string): void {
+        if (fs.existsSync(dirPath)) {
+            const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dirPath, entry.name);
+                if (entry.isDirectory()) {
+                    this.deleteDir(fullPath);
+                } else {
+                    fs.unlinkSync(fullPath);
+                }
+            }
+            fs.rmdirSync(dirPath);
+        }
+    }
 }

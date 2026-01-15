@@ -24,6 +24,33 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Copilot Session Recovery",
+      "properties": {
+        "copilot-recovery.autoBackup.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable automatic backup of Copilot chat sessions"
+        },
+        "copilot-recovery.autoBackup.intervalMinutes": {
+          "type": "number",
+          "default": 60,
+          "minimum": 5,
+          "description": "Interval in minutes between automatic backups"
+        },
+        "copilot-recovery.autoBackup.location": {
+          "type": "string",
+          "default": "",
+          "description": "Directory path where backups will be stored. Leave empty to use default location."
+        },
+        "copilot-recovery.autoBackup.maxBackups": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "description": "Maximum number of backups to keep (older backups will be rotated)"
+        }
+      }
+    },
     "commands": [
       {
         "command": "copilot-recovery.listSessions",
