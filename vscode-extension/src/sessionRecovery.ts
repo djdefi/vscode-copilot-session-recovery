@@ -41,6 +41,26 @@ export interface SessionDetails extends SessionInfo {
     pendingFiles?: PendingFile[];
 }
 
+export interface SessionSimilarity {
+    session: SessionInfo;
+    score: number;
+    reasons: string[];
+}
+
+export interface MergePreview {
+    source: SessionInfo;
+    target: SessionInfo;
+    chatHistoryCount: { source: number; target: number; merged: number };
+    fileEditsCount: { source: number; target: number; merged: number };
+    conflicts: string[];
+}
+
+export interface MergeResult {
+    success: boolean;
+    backupPath?: string;
+    error?: string;
+}
+
 export class SessionRecovery {
     private storagePath: string | null;
     private variant: string;
@@ -398,6 +418,344 @@ export class SessionRecovery {
             } else {
                 fs.copyFileSync(srcPath, destPath);
             }
+        }
+    }
+
+    /**
+     * Calculate similarity between two strings using a simple approach
+     */
+    private calculateStringSimilarity(str1: string, str2: string): number {
+        if (!str1 || !str2) return 0;
+        
+        str1 = str1.toLowerCase();
+        str2 = str2.toLowerCase();
+        
+        if (str1 === str2) return 1;
+        
+        // Calculate Jaccard similarity based on word tokens
+        const words1 = new Set(str1.split(/\s+/));
+        const words2 = new Set(str2.split(/\s+/));
+        
+        const intersection = new Set([...words1].filter(x => words2.has(x)));
+        const union = new Set([...words1, ...words2]);
+        
+        return intersection.size / union.size;
+    }
+
+    /**
+     * Check if two date ranges overlap
+     */
+    private dateRangesOverlap(date1?: number, date2?: number, thresholdMs: number = 24 * 60 * 60 * 1000): boolean {
+        if (!date1 || !date2) return false;
+        return Math.abs(date1 - date2) < thresholdMs;
+    }
+
+    /**
+     * Find sessions that are similar to the given session
+     */
+    async findSimilarSessions(sessionId: string): Promise<SessionSimilarity[]> {
+        const allSessions = await this.listSessions();
+        const targetSession = allSessions.find(s => s.sessionId === sessionId);
+        
+        if (!targetSession) {
+            return [];
+        }
+
+        const similarities: SessionSimilarity[] = [];
+        
+        for (const session of allSessions) {
+            if (session.sessionId === sessionId) continue;
+            
+            const reasons: string[] = [];
+            let score = 0;
+            
+            // Title similarity (40% weight)
+            if (targetSession.title && session.title) {
+                const titleSim = this.calculateStringSimilarity(targetSession.title, session.title);
+                if (titleSim > 0.3) {
+                    score += titleSim * 0.4;
+                    reasons.push(`Title similarity: ${(titleSim * 100).toFixed(0)}%`);
+                }
+            }
+            
+            // Date overlap (30% weight)
+            if (this.dateRangesOverlap(targetSession.lastMessageDate, session.lastMessageDate)) {
+                score += 0.3;
+                reasons.push('Overlapping timeframe');
+            }
+            
+            // Same workspace (30% weight)
+            if (targetSession._workspace !== session._workspace && targetSession._workspace && session._workspace) {
+                score += 0.3;
+                reasons.push(`Different workspaces: ${targetSession._workspace} vs ${session._workspace}`);
+            }
+            
+            if (score > 0.2) {
+                similarities.push({ session, score, reasons });
+            }
+        }
+        
+        // Sort by score descending
+        similarities.sort((a, b) => b.score - a.score);
+        
+        return similarities;
+    }
+
+    /**
+     * Generate a preview of what would be merged
+     */
+    async getMergePreview(sourceSessionId: string, targetSessionId: string): Promise<MergePreview | null> {
+        const allSessions = await this.listSessions();
+        const source = allSessions.find(s => s.sessionId === sourceSessionId);
+        const target = allSessions.find(s => s.sessionId === targetSessionId);
+        
+        if (!source || !target || !source._ws_dir || !target._ws_dir) {
+            return null;
+        }
+
+        const conflicts: string[] = [];
+        
+        // Check chat history
+        let sourceChatCount = 0;
+        let targetChatCount = 0;
+        
+        const sourceChatFile = path.join(source._ws_dir, 'chatSessions', `${source.sessionId}.json`);
+        const targetChatFile = path.join(target._ws_dir, 'chatSessions', `${target.sessionId}.json`);
+        
+        if (fs.existsSync(sourceChatFile)) {
+            const data = JSON.parse(fs.readFileSync(sourceChatFile, 'utf8'));
+            sourceChatCount = data.requests?.length || 0;
+        }
+        
+        if (fs.existsSync(targetChatFile)) {
+            const data = JSON.parse(fs.readFileSync(targetChatFile, 'utf8'));
+            targetChatCount = data.requests?.length || 0;
+        }
+        
+        // Check file edits
+        let sourceFileCount = 0;
+        let targetFileCount = 0;
+        const sourceFiles = new Set<string>();
+        const targetFiles = new Set<string>();
+        
+        const sourceEditDir = path.join(source._ws_dir, 'chatEditingSessions', source.sessionId);
+        const targetEditDir = path.join(target._ws_dir, 'chatEditingSessions', target.sessionId);
+        
+        const sourceStateFile = path.join(sourceEditDir, 'state.json');
+        const targetStateFile = path.join(targetEditDir, 'state.json');
+        
+        if (fs.existsSync(sourceStateFile)) {
+            const state = JSON.parse(fs.readFileSync(sourceStateFile, 'utf8'));
+            const entries = state.recentSnapshot?.entries || [];
+            sourceFileCount = entries.length;
+            entries.forEach((e: any) => {
+                const filePath = decodeURIComponent(e.resource?.replace('file://', '') || '');
+                sourceFiles.add(filePath);
+            });
+        }
+        
+        if (fs.existsSync(targetStateFile)) {
+            const state = JSON.parse(fs.readFileSync(targetStateFile, 'utf8'));
+            const entries = state.recentSnapshot?.entries || [];
+            targetFileCount = entries.length;
+            entries.forEach((e: any) => {
+                const filePath = decodeURIComponent(e.resource?.replace('file://', '') || '');
+                targetFiles.add(filePath);
+                if (sourceFiles.has(filePath)) {
+                    conflicts.push(`File exists in both sessions: ${filePath}`);
+                }
+            });
+        }
+        
+        return {
+            source,
+            target,
+            chatHistoryCount: {
+                source: sourceChatCount,
+                target: targetChatCount,
+                merged: sourceChatCount + targetChatCount
+            },
+            fileEditsCount: {
+                source: sourceFileCount,
+                target: targetFileCount,
+                merged: sourceFileCount + targetFileCount - conflicts.length
+            },
+            conflicts
+        };
+    }
+
+    /**
+     * Merge source session into target session
+     */
+    async mergeSessions(sourceSessionId: string, targetSessionId: string, backupDir: string): Promise<MergeResult> {
+        if (!this.storagePath || !Database) {
+            return { success: false, error: 'Database not available' };
+        }
+
+        const allSessions = await this.listSessions();
+        const source = allSessions.find(s => s.sessionId === sourceSessionId);
+        const target = allSessions.find(s => s.sessionId === targetSessionId);
+        
+        if (!source || !target || !source._ws_dir || !target._ws_dir) {
+            return { success: false, error: 'Session not found' };
+        }
+
+        try {
+            // Create backup
+            const timestamp = Date.now();
+            const backupPath = path.join(backupDir, `merge_backup_${timestamp}`);
+            fs.mkdirSync(backupPath, { recursive: true });
+            
+            await this.backupSession(source.sessionId, backupPath);
+            await this.backupSession(target.sessionId, backupPath);
+            
+            // Merge chat history
+            const sourceChatFile = path.join(source._ws_dir, 'chatSessions', `${source.sessionId}.json`);
+            const targetChatFile = path.join(target._ws_dir, 'chatSessions', `${target.sessionId}.json`);
+            
+            if (fs.existsSync(sourceChatFile) && fs.existsSync(targetChatFile)) {
+                const sourceData = JSON.parse(fs.readFileSync(sourceChatFile, 'utf8'));
+                const targetData = JSON.parse(fs.readFileSync(targetChatFile, 'utf8'));
+                
+                // Combine requests arrays and sort by timestamp
+                const allRequests = [
+                    ...(sourceData.requests || []),
+                    ...(targetData.requests || [])
+                ];
+                
+                // Deduplicate by request ID if present
+                const seenIds = new Set<string>();
+                const uniqueRequests = allRequests.filter(req => {
+                    const id = req.id || `${req.timestamp}_${req.message?.text?.substring(0, 20)}`;
+                    if (seenIds.has(id)) {
+                        return false;
+                    }
+                    seenIds.add(id);
+                    return true;
+                });
+                
+                // Sort by timestamp
+                uniqueRequests.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+                
+                targetData.requests = uniqueRequests;
+                
+                // Update metadata
+                if (sourceData.customTitle && !targetData.customTitle) {
+                    targetData.customTitle = sourceData.customTitle;
+                }
+                
+                fs.writeFileSync(targetChatFile, JSON.stringify(targetData, null, 2));
+            }
+            
+            // Merge editing sessions
+            const sourceEditDir = path.join(source._ws_dir, 'chatEditingSessions', source.sessionId);
+            const targetEditDir = path.join(target._ws_dir, 'chatEditingSessions', target.sessionId);
+            
+            if (fs.existsSync(sourceEditDir) && fs.existsSync(targetEditDir)) {
+                const sourceStateFile = path.join(sourceEditDir, 'state.json');
+                const targetStateFile = path.join(targetEditDir, 'state.json');
+                const sourceContentsDir = path.join(sourceEditDir, 'contents');
+                const targetContentsDir = path.join(targetEditDir, 'contents');
+                
+                if (fs.existsSync(sourceStateFile) && fs.existsSync(targetStateFile)) {
+                    const sourceState = JSON.parse(fs.readFileSync(sourceStateFile, 'utf8'));
+                    const targetState = JSON.parse(fs.readFileSync(targetStateFile, 'utf8'));
+                    
+                    const sourceEntries = sourceState.recentSnapshot?.entries || [];
+                    const targetEntries = targetState.recentSnapshot?.entries || [];
+                    
+                    // Merge entries, keeping newest currentHash for duplicates
+                    const fileMap = new Map<string, any>();
+                    
+                    targetEntries.forEach((entry: any) => {
+                        const filePath = decodeURIComponent(entry.resource?.replace('file://', '') || '');
+                        fileMap.set(filePath, entry);
+                    });
+                    
+                    sourceEntries.forEach((entry: any) => {
+                        const filePath = decodeURIComponent(entry.resource?.replace('file://', '') || '');
+                        const existing = fileMap.get(filePath);
+                        
+                        // Keep the entry with the newest hash (prefer source if different)
+                        if (!existing || entry.currentHash !== existing.currentHash) {
+                            fileMap.set(filePath, entry);
+                            
+                            // Copy content file
+                            if (fs.existsSync(sourceContentsDir) && entry.currentHash) {
+                                const sourceContentFile = path.join(sourceContentsDir, entry.currentHash);
+                                const targetContentFile = path.join(targetContentsDir, entry.currentHash);
+                                
+                                if (fs.existsSync(sourceContentFile) && !fs.existsSync(targetContentFile)) {
+                                    fs.mkdirSync(targetContentsDir, { recursive: true });
+                                    fs.copyFileSync(sourceContentFile, targetContentFile);
+                                }
+                            }
+                            
+                            if (entry.originalHash && fs.existsSync(sourceContentsDir)) {
+                                const sourceContentFile = path.join(sourceContentsDir, entry.originalHash);
+                                const targetContentFile = path.join(targetContentsDir, entry.originalHash);
+                                
+                                if (fs.existsSync(sourceContentFile) && !fs.existsSync(targetContentFile)) {
+                                    fs.mkdirSync(targetContentsDir, { recursive: true });
+                                    fs.copyFileSync(sourceContentFile, targetContentFile);
+                                }
+                            }
+                        }
+                    });
+                    
+                    if (!targetState.recentSnapshot) {
+                        targetState.recentSnapshot = {};
+                    }
+                    targetState.recentSnapshot.entries = Array.from(fileMap.values());
+                    
+                    fs.writeFileSync(targetStateFile, JSON.stringify(targetState, null, 2));
+                }
+            }
+            
+            // Update session index in target workspace
+            const targetDbPath = path.join(target._ws_dir, 'state.vscdb');
+            const targetIndex = this.getSessionIndex(targetDbPath);
+            
+            if (targetIndex?.entries && targetIndex.entries[target.sessionId]) {
+                // Update file count and pending edits flag
+                const targetSession = targetIndex.entries[target.sessionId];
+                const targetStateFile = path.join(targetEditDir, 'state.json');
+                
+                if (fs.existsSync(targetStateFile)) {
+                    const state = JSON.parse(fs.readFileSync(targetStateFile, 'utf8'));
+                    const entries = state.recentSnapshot?.entries || [];
+                    const hasChanges = entries.some((e: any) => e.originalHash !== e.currentHash);
+                    
+                    if (!targetSession.stats) {
+                        targetSession.stats = {};
+                    }
+                    targetSession.stats.fileCount = entries.length;
+                    targetSession.hasPendingEdits = hasChanges;
+                }
+                
+                // Update request count
+                const targetChatFile = path.join(target._ws_dir, 'chatSessions', `${target.sessionId}.json`);
+                if (fs.existsSync(targetChatFile)) {
+                    const data = JSON.parse(fs.readFileSync(targetChatFile, 'utf8'));
+                    if (!targetSession.stats) {
+                        targetSession.stats = {};
+                    }
+                    targetSession.stats.requestCount = data.requests?.length || 0;
+                }
+                
+                // Write back to database
+                const db = new Database(targetDbPath);
+                db.prepare(
+                    "UPDATE ItemTable SET value = ? WHERE key = 'chat.ChatSessionStore.index'"
+                ).run(JSON.stringify(targetIndex));
+                db.close();
+            }
+            
+            return { success: true, backupPath };
+            
+        } catch (error) {
+            console.error('Merge failed:', error);
+            return { success: false, error: String(error) };
         }
     }
 }

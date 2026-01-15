@@ -66,6 +66,12 @@
         "title": "Refresh Sessions",
         "category": "Copilot Recovery",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-recovery.mergeSessions",
+        "title": "Merge Sessions",
+        "category": "Copilot Recovery",
+        "icon": "$(merge)"
       }
     ],
     "viewsContainers": {
