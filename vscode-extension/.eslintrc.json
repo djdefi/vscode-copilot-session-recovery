@@ -23,6 +23,7 @@
   "ignorePatterns": [
     "out",
     "dist",
+    "node_modules",
     "**/*.d.ts"
   ]
 }
