@@ -2,13 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-// Use native Node.js SQLite via better-sqlite3
-let Database: any;
+// Use sql.js (WASM-based SQLite, no native compilation needed)
+let initSqlJs: any;
 try {
-    Database = require('better-sqlite3');
+    initSqlJs = require('sql.js');
 } catch {
-    // Will use fallback JSON parsing if better-sqlite3 not available
-    Database = null;
+    initSqlJs = null;
 }
 
 export interface SessionStats {
@@ -44,11 +43,17 @@ export interface SessionDetails extends SessionInfo {
 export class SessionRecovery {
     private storagePath: string | null;
     private variant: string;
+    private sqlPromise: Promise<any> | null = null;
 
     constructor() {
         const result = this.getVSCodeStoragePath();
         this.storagePath = result.path;
         this.variant = result.variant;
+        
+        // Initialize sql.js
+        if (initSqlJs) {
+            this.sqlPromise = initSqlJs();
+        }
     }
 
     private getVSCodeStoragePath(): { path: string | null; variant: string } {
@@ -79,22 +84,24 @@ export class SessionRecovery {
         return { path: null, variant: 'Unknown' };
     }
 
-    private getSessionIndex(dbPath: string): any | null {
-        if (!Database) {
-            // Fallback: try to read as JSON (won't work for SQLite, but provides graceful error)
-            console.warn('better-sqlite3 not available, some features may be limited');
+    private async getSessionIndex(dbPath: string): Promise<any | null> {
+        if (!this.sqlPromise) {
+            console.warn('sql.js not available');
             return null;
         }
 
         try {
-            const db = new Database(dbPath, { readonly: true });
-            const row = db.prepare(
+            const SQL = await this.sqlPromise;
+            const fileBuffer = fs.readFileSync(dbPath);
+            const db = new SQL.Database(fileBuffer);
+            
+            const result = db.exec(
                 "SELECT value FROM ItemTable WHERE key = 'chat.ChatSessionStore.index'"
-            ).get() as { value: string } | undefined;
+            );
             db.close();
             
-            if (row) {
-                return JSON.parse(row.value);
+            if (result.length > 0 && result[0].values.length > 0) {
+                return JSON.parse(result[0].values[0][0] as string);
             }
         } catch (error) {
             console.error(`Error reading database ${dbPath}:`, error);
@@ -129,7 +136,7 @@ export class SessionRecovery {
             }
 
             // Get session index
-            const index = this.getSessionIndex(dbPath);
+            const index = await this.getSessionIndex(dbPath);
             if (index?.entries) {
                 for (const [sid, info] of Object.entries(index.entries)) {
                     const sessionInfo = info as any;
@@ -298,7 +305,7 @@ export class SessionRecovery {
     }
 
     async fixSession(sessionId: string): Promise<boolean> {
-        if (!this.storagePath || !Database) {
+        if (!this.storagePath || !this.sqlPromise) {
             return false;
         }
 
@@ -308,7 +315,7 @@ export class SessionRecovery {
             const dbPath = path.join(this.storagePath, wsDir, 'state.vscdb');
             if (!fs.existsSync(dbPath)) continue;
 
-            const index = this.getSessionIndex(dbPath);
+            const index = await this.getSessionIndex(dbPath);
             if (!index?.entries) continue;
 
             for (const [sid, info] of Object.entries(index.entries)) {
@@ -329,11 +336,21 @@ export class SessionRecovery {
                 sessionInfo.lastResponseState = 1;
 
                 try {
-                    const db = new Database(dbPath);
-                    db.prepare(
-                        "UPDATE ItemTable SET value = ? WHERE key = 'chat.ChatSessionStore.index'"
-                    ).run(JSON.stringify(index));
+                    const SQL = await this.sqlPromise;
+                    const fileBuffer = fs.readFileSync(dbPath);
+                    const db = new SQL.Database(fileBuffer);
+                    
+                    db.run(
+                        "UPDATE ItemTable SET value = ? WHERE key = 'chat.ChatSessionStore.index'",
+                        [JSON.stringify(index)]
+                    );
+                    
+                    // Write back to file
+                    const data = db.export();
+                    const buffer = Buffer.from(data);
+                    fs.writeFileSync(dbPath, buffer);
                     db.close();
+                    
                     return true;
                 } catch (error) {
                     console.error('Failed to fix session:', error);
