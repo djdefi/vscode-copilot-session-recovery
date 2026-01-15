@@ -1,0 +1,34 @@
+{
+  "entries": {
+    "test-session-123": {
+      "title": "Test Chat Session",
+      "lastResponseState": 1,
+      "hasPendingEdits": false,
+      "stats": {
+        "fileCount": 3,
+        "requestCount": 5
+      },
+      "lastMessageDate": 1704067200000
+    },
+    "stuck-session-456": {
+      "title": "Stuck Session",
+      "lastResponseState": 3,
+      "hasPendingEdits": true,
+      "stats": {
+        "fileCount": 2,
+        "requestCount": 10
+      },
+      "lastMessageDate": 1704153600000
+    },
+    "empty-session-789": {
+      "title": "Empty Session",
+      "lastResponseState": 0,
+      "hasPendingEdits": false,
+      "stats": {
+        "fileCount": 0,
+        "requestCount": 1
+      },
+      "lastMessageDate": 1704240000000
+    }
+  }
+}

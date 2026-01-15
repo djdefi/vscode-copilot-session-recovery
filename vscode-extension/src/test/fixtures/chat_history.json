@@ -1,0 +1,78 @@
+{
+  "customTitle": "Test Chat with Various Response Types",
+  "requests": [
+    {
+      "message": {
+        "text": "How do I create a new file in TypeScript?"
+      },
+      "timestamp": 1704067200000,
+      "response": {
+        "value": [
+          {
+            "kind": "markdownContent",
+            "content": {
+              "value": "You can create a new file in TypeScript using the `fs` module. Here's an example:\n\n```typescript\nimport * as fs from 'fs';\n\nfs.writeFileSync('newfile.txt', 'Hello, World!');\n```"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "message": {
+        "text": "Can you edit the file to add error handling?"
+      },
+      "timestamp": 1704067260000,
+      "response": {
+        "value": [
+          {
+            "kind": "textEditGroup",
+            "uri": "file:///home/user/project/src/example.ts",
+            "edits": [
+              {"start": 0, "end": 10, "newText": "updated content"}
+            ]
+          },
+          {
+            "kind": "markdownContent",
+            "content": {
+              "value": "I've added error handling to the file."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "message": {
+        "text": "What tool can help with this?"
+      },
+      "timestamp": 1704067320000,
+      "response": {
+        "value": [
+          {
+            "kind": "toolInvocation",
+            "toolId": "typescript-linter"
+          },
+          {
+            "kind": "progressMessage",
+            "content": {
+              "value": "Running TypeScript linter..."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "message": {
+        "text": "Show me the code block"
+      },
+      "timestamp": 1704067380000,
+      "response": {
+        "value": [
+          {
+            "kind": "codeblockUri",
+            "uri": "file:///home/user/project/package.json"
+          }
+        ]
+      }
+    }
+  ]
+}
