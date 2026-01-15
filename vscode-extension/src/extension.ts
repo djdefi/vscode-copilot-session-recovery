@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as os from 'os';
 import { SessionTreeProvider, SessionItem } from './sessionProvider';
 import { SessionRecovery } from './sessionRecovery';
 
@@ -13,6 +15,134 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider: treeProvider,
         showCollapseAll: true
     });
+
+    // Status bar item for backup status
+    const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    statusBarItem.command = 'copilot-recovery.showBackupStatus';
+    context.subscriptions.push(statusBarItem);
+
+    // Auto-backup timer state
+    let autoBackupTimer: NodeJS.Timeout | undefined;
+
+    // Function to update status bar
+    function updateStatusBar() {
+        const lastBackup = context.globalState.get<number>('lastBackupTimestamp');
+        if (lastBackup) {
+            const date = new Date(lastBackup);
+            const timeStr = date.toLocaleTimeString();
+            statusBarItem.text = `$(archive) Last backup: ${timeStr}`;
+            statusBarItem.tooltip = `Last automatic backup: ${date.toLocaleString()}`;
+            statusBarItem.show();
+        } else {
+            statusBarItem.hide();
+        }
+    }
+
+    // Function to perform auto-backup
+    async function performAutoBackup() {
+        const config = vscode.workspace.getConfiguration('copilot-recovery.autoBackup');
+        const enabled = config.get<boolean>('enabled', false);
+        
+        if (!enabled) {
+            return;
+        }
+
+        let backupLocation = config.get<string>('location', '');
+        
+        // Use default location if not specified
+        if (!backupLocation) {
+            const homeDir = os.homedir();
+            backupLocation = path.join(homeDir, '.copilot-session-backups');
+        }
+
+        try {
+            const maxBackups = config.get<number>('maxBackups', 10);
+            const count = await recovery.backupAllSessions(backupLocation, maxBackups);
+            
+            const timestamp = Date.now();
+            await context.globalState.update('lastBackupTimestamp', timestamp);
+            updateStatusBar();
+            
+            console.log(`Auto-backup completed: ${count} sessions backed up to ${backupLocation}`);
+        } catch (error) {
+            console.error('Auto-backup failed:', error);
+            vscode.window.showErrorMessage(`Auto-backup failed: ${error}`);
+        }
+    }
+
+    // Function to start/restart auto-backup timer
+    function setupAutoBackupTimer() {
+        // Clear existing timer
+        if (autoBackupTimer) {
+            clearInterval(autoBackupTimer);
+            autoBackupTimer = undefined;
+        }
+
+        const config = vscode.workspace.getConfiguration('copilot-recovery.autoBackup');
+        const enabled = config.get<boolean>('enabled', false);
+        
+        if (!enabled) {
+            statusBarItem.hide();
+            return;
+        }
+
+        const intervalMinutes = config.get<number>('intervalMinutes', 60);
+        const intervalMs = intervalMinutes * 60 * 1000;
+
+        // Update status bar
+        updateStatusBar();
+
+        // Start timer
+        autoBackupTimer = setInterval(() => {
+            performAutoBackup();
+        }, intervalMs);
+
+        // Perform initial backup after a short delay
+        setTimeout(() => {
+            performAutoBackup();
+        }, 5000);
+    }
+
+    // Setup timer on activation
+    setupAutoBackupTimer();
+
+    // Listen for configuration changes
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('copilot-recovery.autoBackup')) {
+                setupAutoBackupTimer();
+            }
+        })
+    );
+
+    // Command to show backup status
+    context.subscriptions.push(
+        vscode.commands.registerCommand('copilot-recovery.showBackupStatus', async () => {
+            const lastBackup = context.globalState.get<number>('lastBackupTimestamp');
+            const config = vscode.workspace.getConfiguration('copilot-recovery.autoBackup');
+            const enabled = config.get<boolean>('enabled', false);
+            const intervalMinutes = config.get<number>('intervalMinutes', 60);
+            const location = config.get<string>('location', '') || path.join(os.homedir(), '.copilot-session-backups');
+
+            let message = `**Auto-backup Status**\n\n`;
+            message += `- Enabled: ${enabled ? 'Yes' : 'No'}\n`;
+            message += `- Interval: ${intervalMinutes} minutes\n`;
+            message += `- Location: ${location}\n`;
+            
+            if (lastBackup) {
+                const date = new Date(lastBackup);
+                message += `- Last backup: ${date.toLocaleString()}\n`;
+            } else {
+                message += `- Last backup: Never\n`;
+            }
+
+            const doc = await vscode.workspace.openTextDocument({
+                content: message,
+                language: 'markdown'
+            });
+            await vscode.window.showTextDocument(doc, { preview: true });
+        })
+    );
 
     // Register commands
     context.subscriptions.push(
