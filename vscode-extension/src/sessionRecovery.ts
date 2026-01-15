@@ -62,6 +62,13 @@ export interface MergeResult {
     error?: string;
 }
 
+interface EditingSessionEntry {
+    resource?: string;
+    state: number;
+    originalHash?: string;
+    currentHash?: string;
+}
+
 export class SessionRecovery {
     private storagePath: string | null;
     private variant: string;
@@ -567,9 +574,9 @@ export class SessionRecovery {
         
         if (fs.existsSync(sourceStateFile)) {
             const state = JSON.parse(fs.readFileSync(sourceStateFile, 'utf8'));
-            const entries = state.recentSnapshot?.entries || [];
+            const entries: EditingSessionEntry[] = state.recentSnapshot?.entries || [];
             sourceFileCount = entries.length;
-            entries.forEach((e: any) => {
+            entries.forEach((e) => {
                 const filePath = this.uriToPath(e.resource || '');
                 sourceFiles.add(filePath);
             });
@@ -577,9 +584,9 @@ export class SessionRecovery {
         
         if (fs.existsSync(targetStateFile)) {
             const state = JSON.parse(fs.readFileSync(targetStateFile, 'utf8'));
-            const entries = state.recentSnapshot?.entries || [];
+            const entries: EditingSessionEntry[] = state.recentSnapshot?.entries || [];
             targetFileCount = entries.length;
-            entries.forEach((e: any) => {
+            entries.forEach((e) => {
                 const filePath = this.uriToPath(e.resource || '');
                 targetFiles.add(filePath);
                 if (sourceFiles.has(filePath)) {
@@ -647,13 +654,26 @@ export class SessionRecovery {
                 // Deduplicate by request ID if present
                 const seenIds = new Set<string>();
                 const uniqueRequests = allRequests.filter(req => {
+                    // Use request ID if available, otherwise create a composite key
+                    // Include response state and agent info to reduce false duplicates
+                    if (req.id) {
+                        if (seenIds.has(req.id)) {
+                            return false;
+                        }
+                        seenIds.add(req.id);
+                        return true;
+                    }
+                    
+                    // Fallback ID: timestamp + text hash + response type
                     const text = req.message?.text;
-                    const textSample = (typeof text === 'string' ? text.substring(0, 20) : '') || '';
-                    const id = req.id || `${req.timestamp}_${textSample}`;
-                    if (seenIds.has(id)) {
+                    const textHash = typeof text === 'string' ? text.length + '_' + text.substring(0, 30) : 'empty';
+                    const responseType = req.response?.value?.[0]?.kind || 'unknown';
+                    const fallbackId = `${req.timestamp}_${textHash}_${responseType}`;
+                    
+                    if (seenIds.has(fallbackId)) {
                         return false;
                     }
-                    seenIds.add(id);
+                    seenIds.add(fallbackId);
                     return true;
                 });
                 
@@ -684,18 +704,18 @@ export class SessionRecovery {
                     const sourceState = JSON.parse(fs.readFileSync(sourceStateFile, 'utf8'));
                     const targetState = JSON.parse(fs.readFileSync(targetStateFile, 'utf8'));
                     
-                    const sourceEntries = sourceState.recentSnapshot?.entries || [];
-                    const targetEntries = targetState.recentSnapshot?.entries || [];
+                    const sourceEntries: EditingSessionEntry[] = sourceState.recentSnapshot?.entries || [];
+                    const targetEntries: EditingSessionEntry[] = targetState.recentSnapshot?.entries || [];
                     
                     // Merge entries, keeping newest currentHash for duplicates
-                    const fileMap = new Map<string, any>();
+                    const fileMap = new Map<string, EditingSessionEntry>();
                     
-                    targetEntries.forEach((entry: any) => {
+                    targetEntries.forEach((entry) => {
                         const filePath = this.uriToPath(entry.resource || '');
                         fileMap.set(filePath, entry);
                     });
                     
-                    sourceEntries.forEach((entry: any) => {
+                    sourceEntries.forEach((entry) => {
                         const filePath = this.uriToPath(entry.resource || '');
                         const existing = fileMap.get(filePath);
                         
@@ -748,8 +768,8 @@ export class SessionRecovery {
                 
                 if (fs.existsSync(targetStateFile)) {
                     const state = JSON.parse(fs.readFileSync(targetStateFile, 'utf8'));
-                    const entries = state.recentSnapshot?.entries || [];
-                    const hasChanges = entries.some((e: any) => e.originalHash !== e.currentHash);
+                    const entries: EditingSessionEntry[] = state.recentSnapshot?.entries || [];
+                    const hasChanges = entries.some((e) => e.originalHash !== e.currentHash);
                     
                     if (!targetSession.stats) {
                         targetSession.stats = {};
