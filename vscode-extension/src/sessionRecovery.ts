@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { fileURLToPath } from 'url';
 
 // Use native Node.js SQLite via better-sqlite3
 let Database: any;
@@ -422,10 +423,22 @@ export class SessionRecovery {
     }
 
     /**
-     * Convert a file:// URI to a file path
+     * Convert a file:// URI to a file path (cross-platform compatible)
      */
     private uriToPath(uri: string): string {
-        return decodeURIComponent(uri.replace('file://', '') || '');
+        if (!uri) return '';
+        
+        try {
+            // Use Node.js fileURLToPath for proper cross-platform conversion
+            if (uri.startsWith('file://')) {
+                return fileURLToPath(uri);
+            }
+            // Fallback for already-decoded paths
+            return decodeURIComponent(uri.replace('file://', ''));
+        } catch {
+            // Fallback to simple decoding if fileURLToPath fails
+            return decodeURIComponent(uri.replace('file://', '') || '');
+        }
     }
 
     /**
@@ -446,7 +459,8 @@ export class SessionRecovery {
         const intersection = new Set([...words1].filter(x => words2.has(x)));
         const union = new Set([...words1, ...words2]);
         
-        return intersection.size / union.size;
+        // Guard against division by zero
+        return union.size === 0 ? 0 : intersection.size / union.size;
     }
 
     /**
@@ -633,7 +647,8 @@ export class SessionRecovery {
                 // Deduplicate by request ID if present
                 const seenIds = new Set<string>();
                 const uniqueRequests = allRequests.filter(req => {
-                    const textSample = req.message?.text?.substring(0, 20) || '';
+                    const text = req.message?.text;
+                    const textSample = (typeof text === 'string' ? text.substring(0, 20) : '') || '';
                     const id = req.id || `${req.timestamp}_${textSample}`;
                     if (seenIds.has(id)) {
                         return false;
@@ -684,7 +699,9 @@ export class SessionRecovery {
                         const filePath = this.uriToPath(entry.resource || '');
                         const existing = fileMap.get(filePath);
                         
-                        // Prefer source entry if different hash (assuming source is more recent for merge)
+                        // Conflict resolution: prefer source entry when hashes differ
+                        // This assumes user is merging older sessions into a newer target
+                        // TODO: Could be enhanced with timestamp-based resolution
                         if (!existing || entry.currentHash !== existing.currentHash) {
                             fileMap.set(filePath, entry);
                             

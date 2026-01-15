@@ -2,6 +2,11 @@ import * as vscode from 'vscode';
 import { SessionTreeProvider, SessionItem } from './sessionProvider';
 import { SessionRecovery } from './sessionRecovery';
 
+// Constants for session merging
+const MIN_SESSIONS_FOR_MERGE = 2;
+const SIMILARITY_DISPLAY_THRESHOLD = 0.3;
+const AUTO_PICK_THRESHOLD = 0.5;
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('Copilot Session Recovery is now active');
 
@@ -186,8 +191,8 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand('copilot-recovery.mergeSessions', async () => {
             const sessions = await recovery.listSessions();
-            if (sessions.length < 2) {
-                vscode.window.showInformationMessage('Need at least 2 sessions to merge');
+            if (sessions.length < MIN_SESSIONS_FOR_MERGE) {
+                vscode.window.showInformationMessage(`Need at least ${MIN_SESSIONS_FOR_MERGE} sessions to merge`);
                 return;
             }
 
@@ -219,7 +224,7 @@ export function activate(context: vscode.ExtensionContext) {
                     const description = `${s.sessionId.slice(0, 8)} - ${s._workspace}`;
                     
                     let detail = `State: ${getStateName(s.lastResponseState)}, Files: ${s.stats?.fileCount || 0}`;
-                    if (similarity && similarity.score > 0.3) {
+                    if (similarity && similarity.score > SIMILARITY_DISPLAY_THRESHOLD) {
                         detail += ` | 🎯 Match: ${(similarity.score * 100).toFixed(0)}% (${similarity.reasons.join(', ')})`;
                     }
                     
@@ -228,7 +233,7 @@ export function activate(context: vscode.ExtensionContext) {
                         description,
                         detail,
                         session: s,
-                        picked: similarity && similarity.score > 0.5
+                        picked: similarity && similarity.score > AUTO_PICK_THRESHOLD
                     };
                 });
 
