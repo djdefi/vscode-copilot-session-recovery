@@ -1,0 +1,24 @@
+{
+  "recentSnapshot": {
+    "entries": [
+      {
+        "resource": "file:///home/user/project/src/index.ts",
+        "state": 2,
+        "originalHash": "abc123",
+        "currentHash": "def456"
+      },
+      {
+        "resource": "file:///home/user/project/src/utils.ts",
+        "state": 1,
+        "originalHash": "xyz789",
+        "currentHash": "xyz789"
+      },
+      {
+        "resource": "file:///home/user/project/README.md",
+        "state": 2,
+        "originalHash": "readme1",
+        "currentHash": "readme2"
+      }
+    ]
+  }
+}

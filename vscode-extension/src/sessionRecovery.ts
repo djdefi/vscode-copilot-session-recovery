@@ -1,15 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-
-// Use native Node.js SQLite via better-sqlite3
-let Database: any;
-try {
-    Database = require('better-sqlite3');
-} catch {
-    // Will use fallback JSON parsing if better-sqlite3 not available
-    Database = null;
-}
+import Database from 'better-sqlite3';
 
 export interface SessionStats {
     fileCount?: number;
@@ -39,6 +31,69 @@ export interface SessionDetails extends SessionInfo {
     chatHistoryPath?: string;
     chatHistorySize?: number;
     pendingFiles?: PendingFile[];
+}
+
+interface SessionIndexEntry {
+    title?: string;
+    lastResponseState: number;
+    hasPendingEdits?: boolean;
+    stats?: SessionStats;
+    lastMessageDate?: number;
+}
+
+interface SessionIndex {
+    entries: Record<string, SessionIndexEntry>;
+}
+
+interface DatabaseRow {
+    value: string;
+}
+
+interface WorkspaceData {
+    folder?: string;
+    workspace?: string;
+}
+
+interface StateEntry {
+    resource?: string;
+    state: number;
+    originalHash?: string;
+    currentHash?: string;
+}
+
+interface StateData {
+    recentSnapshot?: {
+        entries: StateEntry[];
+    };
+}
+
+interface ChatRequestMessage {
+    text?: string;
+}
+
+interface ChatRequest {
+    message?: ChatRequestMessage;
+    timestamp?: number;
+    response?: ChatResponse;
+}
+
+interface ChatData {
+    customTitle?: string;
+    requests?: ChatRequest[];
+}
+
+interface ResponsePart {
+    kind?: string;
+    content?: {
+        value?: string;
+    };
+    uri?: string;
+    edits?: unknown[];
+    toolId?: string;
+}
+
+interface ChatResponse {
+    value?: ResponsePart[];
 }
 
 export class SessionRecovery {
@@ -79,22 +134,16 @@ export class SessionRecovery {
         return { path: null, variant: 'Unknown' };
     }
 
-    private getSessionIndex(dbPath: string): any | null {
-        if (!Database) {
-            // Fallback: try to read as JSON (won't work for SQLite, but provides graceful error)
-            console.warn('better-sqlite3 not available, some features may be limited');
-            return null;
-        }
-
+    private getSessionIndex(dbPath: string): SessionIndex | null {
         try {
             const db = new Database(dbPath, { readonly: true });
             const row = db.prepare(
                 "SELECT value FROM ItemTable WHERE key = 'chat.ChatSessionStore.index'"
-            ).get() as { value: string } | undefined;
+            ).get() as DatabaseRow | undefined;
             db.close();
             
             if (row) {
-                return JSON.parse(row.value);
+                return JSON.parse(row.value) as SessionIndex;
             }
         } catch (error) {
             console.error(`Error reading database ${dbPath}:`, error);
@@ -122,7 +171,7 @@ export class SessionRecovery {
             const workspaceJson = path.join(wsDirPath, 'workspace.json');
             if (fs.existsSync(workspaceJson)) {
                 try {
-                    const data = JSON.parse(fs.readFileSync(workspaceJson, 'utf8'));
+                    const data = JSON.parse(fs.readFileSync(workspaceJson, 'utf8')) as WorkspaceData;
                     const folder = data.folder || data.workspace || 'Unknown';
                     workspaceName = folder.replace('file://', '').split('/').pop() || 'Unknown';
                 } catch {}
@@ -132,10 +181,16 @@ export class SessionRecovery {
             const index = this.getSessionIndex(dbPath);
             if (index?.entries) {
                 for (const [sid, info] of Object.entries(index.entries)) {
-                    const sessionInfo = info as any;
-                    sessionInfo.sessionId = sid;
-                    sessionInfo._workspace = workspaceName;
-                    sessionInfo._ws_dir = wsDirPath;
+                    const sessionInfo: SessionInfo = {
+                        sessionId: sid,
+                        title: info.title,
+                        lastResponseState: info.lastResponseState,
+                        hasPendingEdits: info.hasPendingEdits,
+                        stats: info.stats,
+                        lastMessageDate: info.lastMessageDate,
+                        _workspace: workspaceName,
+                        _ws_dir: wsDirPath
+                    };
                     allSessions.push(sessionInfo);
                 }
             }
@@ -170,9 +225,9 @@ export class SessionRecovery {
         
         if (fs.existsSync(stateFile)) {
             try {
-                const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+                const state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as StateData;
                 const entries = state.recentSnapshot?.entries || [];
-                details.pendingFiles = entries.map((entry: any) => ({
+                details.pendingFiles = entries.map((entry: StateEntry) => ({
                     path: decodeURIComponent(entry.resource?.replace('file://', '') || ''),
                     state: entry.state,
                     hasChanges: entry.originalHash !== entry.currentHash,
@@ -195,7 +250,7 @@ export class SessionRecovery {
         for (const wsDir of workspaceDirs) {
             const chatFile = path.join(this.storagePath, wsDir, 'chatSessions', `${sessionId}.json`);
             if (fs.existsSync(chatFile)) {
-                const data = JSON.parse(fs.readFileSync(chatFile, 'utf8'));
+                const data = JSON.parse(fs.readFileSync(chatFile, 'utf8')) as ChatData;
                 const requests = data.requests || [];
                 
                 let content = `# Chat Session: ${data.customTitle || 'Untitled'}\n\n`;
@@ -227,7 +282,7 @@ export class SessionRecovery {
         throw new Error(`Chat history for session ${sessionId} not found`);
     }
 
-    private formatResponseParts(response: any): string {
+    private formatResponseParts(response: ChatResponse): string {
         if (!response?.value) return '(No response content)';
 
         const parts: string[] = [];
@@ -270,7 +325,7 @@ export class SessionRecovery {
 
             if (!fs.existsSync(stateFile)) continue;
 
-            const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+            const state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as StateData;
             const entries = state.recentSnapshot?.entries || [];
             let recovered = 0;
 
@@ -279,7 +334,7 @@ export class SessionRecovery {
 
                 const uri = entry.resource || '';
                 const filePath = decodeURIComponent(uri.replace('file://', ''));
-                const contentFile = path.join(contentsDir, entry.currentHash);
+                const contentFile = path.join(contentsDir, entry.currentHash || '');
 
                 if (fs.existsSync(contentFile)) {
                     const relPath = filePath.replace(/^\//, '');
@@ -298,7 +353,7 @@ export class SessionRecovery {
     }
 
     async fixSession(sessionId: string): Promise<boolean> {
-        if (!this.storagePath || !Database) {
+        if (!this.storagePath) {
             return false;
         }
 
@@ -314,8 +369,7 @@ export class SessionRecovery {
             for (const [sid, info] of Object.entries(index.entries)) {
                 if (!sid.includes(sessionId)) continue;
                 
-                const sessionInfo = info as any;
-                if (sessionInfo.lastResponseState !== 3) {
+                if (info.lastResponseState !== 3) {
                     return false;
                 }
 
@@ -326,7 +380,7 @@ export class SessionRecovery {
                 }
 
                 // Fix the state
-                sessionInfo.lastResponseState = 1;
+                info.lastResponseState = 1;
 
                 try {
                     const db = new Database(dbPath);
