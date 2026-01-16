@@ -584,4 +584,112 @@ export class SessionRecovery {
             return false;
         }
     }
+
+    // Delete a session completely
+    async deleteSession(sessionId: string): Promise<boolean> {
+        if (!this.storagePath || !this.sqlPromise) {
+            return false;
+        }
+
+        const sessions = await this.listSessions();
+        const session = sessions.find(s => s.sessionId.includes(sessionId));
+        
+        if (!session || !session._ws_dir) {
+            return false;
+        }
+
+        try {
+            // Delete chat history file
+            const chatFile = path.join(session._ws_dir, 'chatSessions', `${session.sessionId}.json`);
+            if (fs.existsSync(chatFile)) {
+                fs.unlinkSync(chatFile);
+            }
+
+            // Delete editing session directory
+            const editDir = path.join(session._ws_dir, 'chatEditingSessions', session.sessionId);
+            if (fs.existsSync(editDir)) {
+                this.deleteDirRecursive(editDir);
+            }
+
+            // Remove from index
+            const dbPath = path.join(session._ws_dir, 'state.vscdb');
+            const index = await this.getSessionIndex(dbPath);
+            if (index?.entries && index.entries[session.sessionId]) {
+                delete index.entries[session.sessionId];
+                
+                const SQL = await this.sqlPromise;
+                const fileBuffer = fs.readFileSync(dbPath);
+                const db = new SQL.Database(fileBuffer);
+                
+                db.run(
+                    "UPDATE ItemTable SET value = ? WHERE key = 'chat.ChatSessionStore.index'",
+                    [JSON.stringify(index)]
+                );
+                
+                const data = db.export();
+                const buffer = Buffer.from(data);
+                fs.writeFileSync(dbPath, buffer);
+                db.close();
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Failed to delete session:', error);
+            return false;
+        }
+    }
+
+    private deleteDirRecursive(dir: string): void {
+        if (fs.existsSync(dir)) {
+            fs.readdirSync(dir).forEach(file => {
+                const curPath = path.join(dir, file);
+                if (fs.lstatSync(curPath).isDirectory()) {
+                    this.deleteDirRecursive(curPath);
+                } else {
+                    fs.unlinkSync(curPath);
+                }
+            });
+            fs.rmdirSync(dir);
+        }
+    }
+
+    // Get session timeline info
+    async getSessionTimeline(sessionId: string): Promise<Array<{ timestamp: number; type: string; content: string }>> {
+        if (!this.storagePath) return [];
+        
+        const timeline: Array<{ timestamp: number; type: string; content: string }> = [];
+        const workspaceDirs = fs.readdirSync(this.storagePath);
+        
+        for (const wsDir of workspaceDirs) {
+            const chatFile = path.join(this.storagePath, wsDir, 'chatSessions', `${sessionId}.json`);
+            if (fs.existsSync(chatFile)) {
+                try {
+                    const data = JSON.parse(fs.readFileSync(chatFile, 'utf8'));
+                    for (const req of (data.requests || [])) {
+                        if (req.timestamp) {
+                            timeline.push({
+                                timestamp: req.timestamp,
+                                type: 'message',
+                                content: (req.message?.text || '').slice(0, 100)
+                            });
+                        }
+                    }
+                } catch {}
+                break;
+            }
+        }
+        
+        timeline.sort((a, b) => a.timestamp - b.timestamp);
+        return timeline;
+    }
+
+    // Get summary statistics for status bar
+    async getQuickStats(): Promise<{ total: number; stuck: number; pending: number }> {
+        const sessions = await this.listSessions();
+        return {
+            total: sessions.length,
+            stuck: sessions.filter(s => s.lastResponseState === 3).length,
+            pending: sessions.filter(s => s.hasPendingEdits).length
+        };
+    }
 }

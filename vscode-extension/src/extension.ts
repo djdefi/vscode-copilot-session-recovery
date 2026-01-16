@@ -1,18 +1,45 @@
 import * as vscode from 'vscode';
 import { SessionTreeProvider, SessionItem } from './sessionProvider';
 import { SessionRecovery } from './sessionRecovery';
+import { PendingFilesProvider } from './pendingFilesProvider';
+import { DashboardPanel } from './dashboardPanel';
+import { TelemetryStatusBar } from './telemetryStatusBar';
+import { TelemetryPanel } from './telemetryPanel';
+
+let statusBarItem: vscode.StatusBarItem;
+let telemetryStatusBar: TelemetryStatusBar;
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Copilot Session Recovery is now active');
 
     const recovery = new SessionRecovery();
     const treeProvider = new SessionTreeProvider(recovery);
+    const pendingFilesProvider = new PendingFilesProvider(recovery);
 
-    // Register tree view
+    // Create telemetry status bar (real-time token/context tracking)
+    telemetryStatusBar = new TelemetryStatusBar(context);
+    context.subscriptions.push(telemetryStatusBar);
+
+    // Create legacy status bar item (for stuck/pending counts)
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBarItem.command = 'copilot-recovery.showDashboard';
+    context.subscriptions.push(statusBarItem);
+    updateStatusBar(recovery);
+
+    // Register tree views
     const treeView = vscode.window.createTreeView('copilotRecovery.sessions', {
         treeDataProvider: treeProvider,
         showCollapseAll: true
     });
+
+    const pendingFilesView = vscode.window.createTreeView('copilotRecovery.pendingFiles', {
+        treeDataProvider: pendingFilesProvider,
+        showCollapseAll: true
+    });
+
+    // Auto-refresh status bar periodically
+    const refreshInterval = setInterval(() => updateStatusBar(recovery), 60000);
+    context.subscriptions.push({ dispose: () => clearInterval(refreshInterval) });
 
     // Register commands
     context.subscriptions.push(
@@ -186,6 +213,60 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand('copilot-recovery.refresh', () => {
             treeProvider.refresh();
+            pendingFilesProvider.refresh();
+            updateStatusBar(recovery);
+        }),
+
+        // Show interactive dashboard
+        vscode.commands.registerCommand('copilot-recovery.showDashboard', async () => {
+            await DashboardPanel.createOrShow(recovery);
+        }),
+
+        // Show real-time telemetry panel
+        vscode.commands.registerCommand('copilot-recovery.showTelemetryPanel', async () => {
+            TelemetryPanel.createOrShow(context.extensionUri);
+        }),
+
+        // Refresh telemetry status bar
+        vscode.commands.registerCommand('copilot-recovery.refreshTelemetry', async () => {
+            telemetryStatusBar.forceRefresh();
+            vscode.window.showInformationMessage('Telemetry refreshed');
+        }),
+
+        // Delete a session
+        vscode.commands.registerCommand('copilot-recovery.deleteSession', async (item: SessionItem | any) => {
+            const session = item?.session || item;
+            if (!session?.sessionId) {
+                const sessions = await recovery.listSessions();
+                const items = sessions.map(s => ({
+                    label: s.title || 'Untitled',
+                    description: s.sessionId.slice(0, 8),
+                    session: s
+                }));
+                const selected = await vscode.window.showQuickPick(items, {
+                    placeHolder: 'Select session to delete'
+                });
+                if (!selected) return;
+                item = { session: selected.session };
+            }
+
+            const confirm = await vscode.window.showWarningMessage(
+                `Delete session "${item.session.title || 'Untitled'}"? This will permanently remove chat history and pending edits.`,
+                { modal: true },
+                'Delete Session'
+            );
+
+            if (confirm === 'Delete Session') {
+                const success = await recovery.deleteSession(item.session.sessionId);
+                if (success) {
+                    vscode.window.showInformationMessage('Session deleted');
+                    treeProvider.refresh();
+                    pendingFilesProvider.refresh();
+                    updateStatusBar(recovery);
+                } else {
+                    vscode.window.showErrorMessage('Failed to delete session');
+                }
+            }
         }),
 
         // Diff a pending file - shows side-by-side comparison
@@ -429,56 +510,6 @@ export function activate(context: vscode.ExtensionContext) {
             });
         }),
 
-        // Show dashboard with storage analysis
-        vscode.commands.registerCommand('copilot-recovery.showDashboard', async () => {
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: 'Analyzing sessions...'
-            }, async () => {
-                const stats = await recovery.analyzeStorage();
-                const sessions = await recovery.listSessions();
-
-                let content = '# 📊 Copilot Session Dashboard\n\n';
-                content += '## Overview\n\n';
-                content += `| Metric | Value |\n|--------|-------|\n`;
-                content += `| Total Sessions | ${stats.sessionCount} |\n`;
-                content += `| Stuck Sessions | ${stats.stuckCount} ⚠️ |\n`;
-                content += `| Sessions with Pending Edits | ${stats.pendingEditsCount} |\n`;
-                content += `| Total Storage Used | ${(stats.totalSize / 1024 / 1024).toFixed(2)} MB |\n\n`;
-
-                if (stats.stuckCount > 0) {
-                    content += '## ⚠️ Stuck Sessions\n\n';
-                    const stuck = sessions.filter(s => s.lastResponseState === 3);
-                    for (const s of stuck) {
-                        content += `- **${s.title || 'Untitled'}** (\`${s.sessionId.slice(0, 8)}\`) - ${s._workspace || 'Unknown workspace'}\n`;
-                    }
-                    content += '\n';
-                }
-
-                if (stats.pendingEditsCount > 0) {
-                    content += '## ✏️ Sessions with Pending Edits\n\n';
-                    const withEdits = sessions.filter(s => s.hasPendingEdits);
-                    for (const s of withEdits) {
-                        content += `- **${s.title || 'Untitled'}** (\`${s.sessionId.slice(0, 8)}\`)\n`;
-                    }
-                    content += '\n';
-                }
-
-                content += '## 📁 Largest Sessions\n\n';
-                content += '| Session | Size |\n|---------|------|\n';
-                for (const s of stats.largestSessions) {
-                    const sizeMB = (s.size / 1024 / 1024).toFixed(2);
-                    content += `| ${s.title} (\`${s.sessionId.slice(0, 8)}\`) | ${sizeMB} MB |\n`;
-                }
-
-                const doc = await vscode.workspace.openTextDocument({
-                    content,
-                    language: 'markdown'
-                });
-                await vscode.window.showTextDocument(doc, { preview: true });
-            });
-        }),
-
         // Fix all stuck sessions
         vscode.commands.registerCommand('copilot-recovery.fixAllStuck', async () => {
             const sessions = await recovery.listSessions();
@@ -506,15 +537,18 @@ export function activate(context: vscode.ExtensionContext) {
                     }
                 });
                 treeProvider.refresh();
+                pendingFilesProvider.refresh();
+                updateStatusBar(recovery);
             }
         }),
 
-        // Analyze storage usage
+        // Analyze storage usage - opens dashboard
         vscode.commands.registerCommand('copilot-recovery.analyzeStorage', async () => {
             vscode.commands.executeCommand('copilot-recovery.showDashboard');
         }),
 
-        treeView
+        treeView,
+        pendingFilesView
     );
 }
 
@@ -591,4 +625,32 @@ function getLanguageFromPath(filePath: string): string {
     return langMap[ext] || 'plaintext';
 }
 
-export function deactivate() {}
+async function updateStatusBar(recovery: SessionRecovery) {
+    try {
+        const stats = await recovery.getQuickStats();
+        
+        if (stats.stuck > 0) {
+            statusBarItem.text = `$(error) ${stats.stuck} stuck`;
+            statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+            statusBarItem.tooltip = `${stats.stuck} stuck sessions, ${stats.pending} with pending edits. Click to open dashboard.`;
+        } else if (stats.pending > 0) {
+            statusBarItem.text = `$(edit) ${stats.pending} pending`;
+            statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            statusBarItem.tooltip = `${stats.pending} sessions with pending edits. Click to open dashboard.`;
+        } else {
+            statusBarItem.text = `$(check) ${stats.total} sessions`;
+            statusBarItem.backgroundColor = undefined;
+            statusBarItem.tooltip = `${stats.total} Copilot sessions. Click to open dashboard.`;
+        }
+        
+        statusBarItem.show();
+    } catch (error) {
+        statusBarItem.hide();
+    }
+}
+
+export function deactivate() {
+    if (statusBarItem) {
+        statusBarItem.dispose();
+    }
+}

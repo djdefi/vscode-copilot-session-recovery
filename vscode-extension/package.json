@@ -108,6 +108,24 @@
         "title": "Analyze Session Storage",
         "category": "Copilot Recovery",
         "icon": "$(graph)"
+      },
+      {
+        "command": "copilot-recovery.deleteSession",
+        "title": "Delete Session",
+        "category": "Copilot Recovery",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "copilot-recovery.showTelemetryPanel",
+        "title": "Show Telemetry Panel",
+        "category": "Copilot Recovery",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "copilot-recovery.refreshTelemetry",
+        "title": "Refresh Telemetry",
+        "category": "Copilot Recovery",
+        "icon": "$(sync)"
       }
     ],
     "viewsContainers": {
