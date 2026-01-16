@@ -1,0 +1,208 @@
+{
+  "name": "copilot-session-recovery",
+  "displayName": "Copilot Session Recovery",
+  "description": "Recover stuck or broken Copilot Chat sessions, export chat history, and restore pending file edits",
+  "version": "0.1.0",
+  "publisher": "djdefi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/djdefi/vscode-copilot-session-recovery"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "copilot",
+    "recovery",
+    "chat",
+    "session",
+    "backup"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilot-recovery.listSessions",
+        "title": "List All Sessions",
+        "category": "Copilot Recovery",
+        "icon": "$(list-unordered)"
+      },
+      {
+        "command": "copilot-recovery.showSession",
+        "title": "Show Session Details",
+        "category": "Copilot Recovery",
+        "icon": "$(info)"
+      },
+      {
+        "command": "copilot-recovery.exportSession",
+        "title": "Export Chat History",
+        "category": "Copilot Recovery",
+        "icon": "$(export)"
+      },
+      {
+        "command": "copilot-recovery.recoverFiles",
+        "title": "Recover Pending Files",
+        "category": "Copilot Recovery",
+        "icon": "$(file-symlink-file)"
+      },
+      {
+        "command": "copilot-recovery.fixSession",
+        "title": "Fix Stuck Session",
+        "category": "Copilot Recovery",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "copilot-recovery.backupSession",
+        "title": "Backup Session",
+        "category": "Copilot Recovery",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "copilot-recovery.refresh",
+        "title": "Refresh Sessions",
+        "category": "Copilot Recovery",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-recovery.diffFile",
+        "title": "View Diff for Pending File",
+        "category": "Copilot Recovery",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "copilot-recovery.applyFile",
+        "title": "Apply Pending Changes to File",
+        "category": "Copilot Recovery",
+        "icon": "$(check)"
+      },
+      {
+        "command": "copilot-recovery.selectiveRecover",
+        "title": "Selective File Recovery",
+        "category": "Copilot Recovery",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "copilot-recovery.searchSessions",
+        "title": "Search Across Sessions",
+        "category": "Copilot Recovery",
+        "icon": "$(search)"
+      },
+      {
+        "command": "copilot-recovery.showDashboard",
+        "title": "Show Session Dashboard",
+        "category": "Copilot Recovery",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "copilot-recovery.fixAllStuck",
+        "title": "Fix All Stuck Sessions",
+        "category": "Copilot Recovery",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "copilot-recovery.analyzeStorage",
+        "title": "Analyze Session Storage",
+        "category": "Copilot Recovery",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "copilot-recovery.deleteSession",
+        "title": "Delete Session",
+        "category": "Copilot Recovery",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "copilot-recovery.showTelemetryPanel",
+        "title": "Show Telemetry Panel",
+        "category": "Copilot Recovery",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "copilot-recovery.refreshTelemetry",
+        "title": "Refresh Telemetry",
+        "category": "Copilot Recovery",
+        "icon": "$(sync)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "copilot-recovery",
+          "title": "Copilot Recovery",
+          "icon": "$(history)"
+        }
+      ]
+    },
+    "views": {
+      "copilot-recovery": [
+        {
+          "id": "copilotRecovery.sessions",
+          "name": "Chat Sessions",
+          "contextualTitle": "Copilot Session Recovery"
+        },
+        {
+          "id": "copilotRecovery.pendingFiles",
+          "name": "Pending Files",
+          "contextualTitle": "Pending Copilot Edits"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "copilot-recovery.refresh",
+          "when": "view == copilotRecovery.sessions",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "copilot-recovery.showSession",
+          "when": "view == copilotRecovery.sessions",
+          "group": "inline@1"
+        },
+        {
+          "command": "copilot-recovery.exportSession",
+          "when": "view == copilotRecovery.sessions",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "copilot-recovery.recoverFiles",
+          "when": "view == copilotRecovery.sessions && viewItem == session-with-edits",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "copilot-recovery.fixSession",
+          "when": "view == copilotRecovery.sessions && viewItem == session-stuck",
+          "group": "1_actions@3"
+        },
+        {
+          "command": "copilot-recovery.backupSession",
+          "when": "view == copilotRecovery.sessions",
+          "group": "2_backup@1"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "sql.js": "^1.10.0"
+  }
+}
