@@ -188,6 +188,332 @@ export function activate(context: vscode.ExtensionContext) {
             treeProvider.refresh();
         }),
 
+        // Diff a pending file - shows side-by-side comparison
+        vscode.commands.registerCommand('copilot-recovery.diffFile', async (item: any) => {
+            if (!item?.filePath || !item?.sessionId || !item?.currentHash) {
+                // Prompt user to select from all pending files
+                const allFiles = await recovery.getAllPendingFiles();
+                if (allFiles.length === 0) {
+                    vscode.window.showInformationMessage('No pending file edits found');
+                    return;
+                }
+
+                const items = allFiles.map(f => ({
+                    label: f.path.split('/').pop() || f.path,
+                    description: f.sessionTitle,
+                    detail: f.path,
+                    file: f
+                }));
+
+                const selected = await vscode.window.showQuickPick(items, {
+                    placeHolder: 'Select a file to view diff'
+                });
+                if (!selected) return;
+                item = {
+                    filePath: selected.file.path,
+                    sessionId: selected.file.sessionId,
+                    currentHash: selected.file.currentHash,
+                    originalHash: selected.file.originalHash
+                };
+            }
+
+            const pendingContent = await recovery.getPendingFileContent(item.sessionId, item.currentHash);
+            if (!pendingContent) {
+                vscode.window.showErrorMessage('Could not retrieve pending file content');
+                return;
+            }
+
+            // Create a temp file with pending content
+            const pendingUri = vscode.Uri.parse(`untitled:Pending - ${item.filePath.split('/').pop()}`);
+            const pendingDoc = await vscode.workspace.openTextDocument({
+                content: pendingContent,
+                language: getLanguageFromPath(item.filePath)
+            });
+
+            // Open diff with original file
+            const originalUri = vscode.Uri.file(item.filePath);
+            const originalExists = await vscode.workspace.fs.stat(originalUri).then(() => true, () => false);
+
+            if (originalExists) {
+                await vscode.commands.executeCommand('vscode.diff',
+                    originalUri,
+                    pendingDoc.uri,
+                    `${item.filePath.split('/').pop()} ↔ Copilot Pending Changes`
+                );
+            } else {
+                await vscode.window.showTextDocument(pendingDoc, { preview: true });
+                vscode.window.showWarningMessage(`Original file not found: ${item.filePath}. Showing pending content only.`);
+            }
+        }),
+
+        // Apply pending changes directly to the file
+        vscode.commands.registerCommand('copilot-recovery.applyFile', async (item: any) => {
+            if (!item?.filePath || !item?.sessionId || !item?.currentHash) {
+                const allFiles = await recovery.getAllPendingFiles();
+                if (allFiles.length === 0) {
+                    vscode.window.showInformationMessage('No pending file edits found');
+                    return;
+                }
+
+                const items = allFiles.map(f => ({
+                    label: f.path.split('/').pop() || f.path,
+                    description: f.sessionTitle,
+                    detail: f.path,
+                    file: f
+                }));
+
+                const selected = await vscode.window.showQuickPick(items, {
+                    placeHolder: 'Select a file to apply changes',
+                    canPickMany: true
+                });
+                if (!selected || selected.length === 0) return;
+
+                let applied = 0;
+                for (const sel of selected) {
+                    const confirm = await vscode.window.showWarningMessage(
+                        `Apply Copilot changes to ${sel.file.path}? This will overwrite the current file.`,
+                        { modal: false },
+                        'Apply', 'Skip'
+                    );
+                    if (confirm === 'Apply' && sel.file.currentHash) {
+                        const success = await recovery.applyPendingFile(
+                            sel.file.sessionId,
+                            sel.file.path,
+                            sel.file.currentHash
+                        );
+                        if (success) applied++;
+                    }
+                }
+                vscode.window.showInformationMessage(`Applied changes to ${applied} file(s)`);
+                return;
+            }
+
+            const confirm = await vscode.window.showWarningMessage(
+                `Apply Copilot changes to ${item.filePath}? This will overwrite the current file.`,
+                { modal: true },
+                'Apply Changes'
+            );
+
+            if (confirm === 'Apply Changes') {
+                const success = await recovery.applyPendingFile(item.sessionId, item.filePath, item.currentHash);
+                if (success) {
+                    vscode.window.showInformationMessage(`Applied changes to ${item.filePath}`);
+                    // Open the file
+                    const doc = await vscode.workspace.openTextDocument(item.filePath);
+                    await vscode.window.showTextDocument(doc);
+                } else {
+                    vscode.window.showErrorMessage('Failed to apply changes');
+                }
+            }
+        }),
+
+        // Selective file recovery - pick specific files
+        vscode.commands.registerCommand('copilot-recovery.selectiveRecover', async (item: SessionItem | any) => {
+            const session = item?.session || item;
+            if (!session?.sessionId) {
+                vscode.window.showErrorMessage('No session selected');
+                return;
+            }
+
+            const details = await recovery.getSessionDetails(session.sessionId);
+            if (!details?.pendingFiles || details.pendingFiles.length === 0) {
+                vscode.window.showInformationMessage('No pending files in this session');
+                return;
+            }
+
+            const changedFiles = details.pendingFiles.filter(f => f.hasChanges);
+            if (changedFiles.length === 0) {
+                vscode.window.showInformationMessage('No changed files in this session');
+                return;
+            }
+
+            const items = changedFiles.map(f => ({
+                label: f.path.split('/').pop() || f.path,
+                description: f.path,
+                picked: true,
+                file: f
+            }));
+
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select files to recover',
+                canPickMany: true
+            });
+
+            if (!selected || selected.length === 0) return;
+
+            const action = await vscode.window.showQuickPick([
+                { label: 'View Diffs', action: 'diff' },
+                { label: 'Apply to Original Locations', action: 'apply' },
+                { label: 'Export to Folder', action: 'export' }
+            ], { placeHolder: 'What would you like to do?' });
+
+            if (!action) return;
+
+            if (action.action === 'diff') {
+                for (const sel of selected) {
+                    await vscode.commands.executeCommand('copilot-recovery.diffFile', {
+                        filePath: sel.file.path,
+                        sessionId: session.sessionId,
+                        currentHash: sel.file.currentHash
+                    });
+                }
+            } else if (action.action === 'apply') {
+                let applied = 0;
+                for (const sel of selected) {
+                    const success = await recovery.applyPendingFile(
+                        session.sessionId,
+                        sel.file.path,
+                        sel.file.currentHash!
+                    );
+                    if (success) applied++;
+                }
+                vscode.window.showInformationMessage(`Applied ${applied}/${selected.length} files`);
+            } else if (action.action === 'export') {
+                const uri = await vscode.window.showOpenDialog({
+                    canSelectFolders: true,
+                    canSelectFiles: false,
+                    openLabel: 'Select Export Folder'
+                });
+                if (uri && uri[0]) {
+                    // Export only selected files
+                    let exported = 0;
+                    for (const sel of selected) {
+                        const content = await recovery.getPendingFileContent(session.sessionId, sel.file.currentHash!);
+                        if (content) {
+                            const outPath = vscode.Uri.joinPath(uri[0], sel.file.path.replace(/^\//, ''));
+                            await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(outPath, '..'));
+                            await vscode.workspace.fs.writeFile(outPath, Buffer.from(content, 'utf8'));
+                            exported++;
+                        }
+                    }
+                    vscode.window.showInformationMessage(`Exported ${exported} files to ${uri[0].fsPath}`);
+                }
+            }
+        }),
+
+        // Search across all sessions
+        vscode.commands.registerCommand('copilot-recovery.searchSessions', async () => {
+            const query = await vscode.window.showInputBox({
+                placeHolder: 'Enter search term...',
+                prompt: 'Search across all chat histories'
+            });
+
+            if (!query) return;
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Searching sessions...'
+            }, async () => {
+                const results = await recovery.searchSessions(query);
+
+                if (results.length === 0) {
+                    vscode.window.showInformationMessage(`No results found for "${query}"`);
+                    return;
+                }
+
+                const items = results.flatMap(r => r.matches.map(m => ({
+                    label: r.title,
+                    description: r.sessionId.slice(0, 8),
+                    detail: m,
+                    sessionId: r.sessionId
+                })));
+
+                const selected = await vscode.window.showQuickPick(items, {
+                    placeHolder: `Found ${results.length} sessions with matches`,
+                    matchOnDetail: true
+                });
+
+                if (selected) {
+                    vscode.commands.executeCommand('copilot-recovery.exportSession', { session: { sessionId: selected.sessionId } });
+                }
+            });
+        }),
+
+        // Show dashboard with storage analysis
+        vscode.commands.registerCommand('copilot-recovery.showDashboard', async () => {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: 'Analyzing sessions...'
+            }, async () => {
+                const stats = await recovery.analyzeStorage();
+                const sessions = await recovery.listSessions();
+
+                let content = '# 📊 Copilot Session Dashboard\n\n';
+                content += '## Overview\n\n';
+                content += `| Metric | Value |\n|--------|-------|\n`;
+                content += `| Total Sessions | ${stats.sessionCount} |\n`;
+                content += `| Stuck Sessions | ${stats.stuckCount} ⚠️ |\n`;
+                content += `| Sessions with Pending Edits | ${stats.pendingEditsCount} |\n`;
+                content += `| Total Storage Used | ${(stats.totalSize / 1024 / 1024).toFixed(2)} MB |\n\n`;
+
+                if (stats.stuckCount > 0) {
+                    content += '## ⚠️ Stuck Sessions\n\n';
+                    const stuck = sessions.filter(s => s.lastResponseState === 3);
+                    for (const s of stuck) {
+                        content += `- **${s.title || 'Untitled'}** (\`${s.sessionId.slice(0, 8)}\`) - ${s._workspace || 'Unknown workspace'}\n`;
+                    }
+                    content += '\n';
+                }
+
+                if (stats.pendingEditsCount > 0) {
+                    content += '## ✏️ Sessions with Pending Edits\n\n';
+                    const withEdits = sessions.filter(s => s.hasPendingEdits);
+                    for (const s of withEdits) {
+                        content += `- **${s.title || 'Untitled'}** (\`${s.sessionId.slice(0, 8)}\`)\n`;
+                    }
+                    content += '\n';
+                }
+
+                content += '## 📁 Largest Sessions\n\n';
+                content += '| Session | Size |\n|---------|------|\n';
+                for (const s of stats.largestSessions) {
+                    const sizeMB = (s.size / 1024 / 1024).toFixed(2);
+                    content += `| ${s.title} (\`${s.sessionId.slice(0, 8)}\`) | ${sizeMB} MB |\n`;
+                }
+
+                const doc = await vscode.workspace.openTextDocument({
+                    content,
+                    language: 'markdown'
+                });
+                await vscode.window.showTextDocument(doc, { preview: true });
+            });
+        }),
+
+        // Fix all stuck sessions
+        vscode.commands.registerCommand('copilot-recovery.fixAllStuck', async () => {
+            const sessions = await recovery.listSessions();
+            const stuckCount = sessions.filter(s => s.lastResponseState === 3).length;
+
+            if (stuckCount === 0) {
+                vscode.window.showInformationMessage('No stuck sessions found');
+                return;
+            }
+
+            const confirm = await vscode.window.showWarningMessage(
+                `Fix ${stuckCount} stuck session(s)? This will reset error states.`,
+                { modal: true },
+                'Fix All'
+            );
+
+            if (confirm === 'Fix All') {
+                const fixed = await recovery.fixAllStuck();
+                vscode.window.showInformationMessage(
+                    `Fixed ${fixed} session(s). Reload VS Code to load them.`,
+                    'Reload Window'
+                ).then(action => {
+                    if (action === 'Reload Window') {
+                        vscode.commands.executeCommand('workbench.action.reloadWindow');
+                    }
+                });
+                treeProvider.refresh();
+            }
+        }),
+
+        // Analyze storage usage
+        vscode.commands.registerCommand('copilot-recovery.analyzeStorage', async () => {
+            vscode.commands.executeCommand('copilot-recovery.showDashboard');
+        }),
+
         treeView
     );
 }
@@ -228,6 +554,41 @@ function formatSessionDetails(details: any): string {
     }
     
     return md;
+}
+
+function getLanguageFromPath(filePath: string): string {
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    const langMap: { [key: string]: string } = {
+        'ts': 'typescript',
+        'tsx': 'typescriptreact',
+        'js': 'javascript',
+        'jsx': 'javascriptreact',
+        'py': 'python',
+        'rb': 'ruby',
+        'go': 'go',
+        'rs': 'rust',
+        'java': 'java',
+        'c': 'c',
+        'cpp': 'cpp',
+        'h': 'c',
+        'hpp': 'cpp',
+        'cs': 'csharp',
+        'css': 'css',
+        'scss': 'scss',
+        'less': 'less',
+        'html': 'html',
+        'json': 'json',
+        'yaml': 'yaml',
+        'yml': 'yaml',
+        'md': 'markdown',
+        'sh': 'shellscript',
+        'bash': 'shellscript',
+        'sql': 'sql',
+        'xml': 'xml',
+        'vue': 'vue',
+        'svelte': 'svelte'
+    };
+    return langMap[ext] || 'plaintext';
 }
 
 export function deactivate() {}

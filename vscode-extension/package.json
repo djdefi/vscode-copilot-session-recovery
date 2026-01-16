@@ -66,6 +66,48 @@
         "title": "Refresh Sessions",
         "category": "Copilot Recovery",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "copilot-recovery.diffFile",
+        "title": "View Diff for Pending File",
+        "category": "Copilot Recovery",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "copilot-recovery.applyFile",
+        "title": "Apply Pending Changes to File",
+        "category": "Copilot Recovery",
+        "icon": "$(check)"
+      },
+      {
+        "command": "copilot-recovery.selectiveRecover",
+        "title": "Selective File Recovery",
+        "category": "Copilot Recovery",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "copilot-recovery.searchSessions",
+        "title": "Search Across Sessions",
+        "category": "Copilot Recovery",
+        "icon": "$(search)"
+      },
+      {
+        "command": "copilot-recovery.showDashboard",
+        "title": "Show Session Dashboard",
+        "category": "Copilot Recovery",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "copilot-recovery.fixAllStuck",
+        "title": "Fix All Stuck Sessions",
+        "category": "Copilot Recovery",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "copilot-recovery.analyzeStorage",
+        "title": "Analyze Session Storage",
+        "category": "Copilot Recovery",
+        "icon": "$(graph)"
       }
     ],
     "viewsContainers": {
@@ -83,6 +125,11 @@
           "id": "copilotRecovery.sessions",
           "name": "Chat Sessions",
           "contextualTitle": "Copilot Session Recovery"
+        },
+        {
+          "id": "copilotRecovery.pendingFiles",
+          "name": "Pending Files",
+          "contextualTitle": "Pending Copilot Edits"
         }
       ]
     },

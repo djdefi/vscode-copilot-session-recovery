@@ -417,4 +417,171 @@ export class SessionRecovery {
             }
         }
     }
+
+    // Get pending file content by hash
+    async getPendingFileContent(sessionId: string, fileHash: string): Promise<string | null> {
+        if (!this.storagePath) return null;
+        
+        const workspaceDirs = fs.readdirSync(this.storagePath);
+        for (const wsDir of workspaceDirs) {
+            const contentPath = path.join(this.storagePath, wsDir, 'chatEditingSessions', sessionId, 'contents', fileHash);
+            if (fs.existsSync(contentPath)) {
+                return fs.readFileSync(contentPath, 'utf8');
+            }
+        }
+        return null;
+    }
+
+    // Get all pending files across all sessions
+    async getAllPendingFiles(): Promise<Array<PendingFile & { sessionId: string; sessionTitle: string }>> {
+        const sessions = await this.listSessions();
+        const allFiles: Array<PendingFile & { sessionId: string; sessionTitle: string }> = [];
+        
+        for (const session of sessions) {
+            const details = await this.getSessionDetails(session.sessionId);
+            if (details?.pendingFiles) {
+                for (const file of details.pendingFiles) {
+                    if (file.hasChanges) {
+                        allFiles.push({
+                            ...file,
+                            sessionId: session.sessionId,
+                            sessionTitle: session.title || 'Untitled'
+                        });
+                    }
+                }
+            }
+        }
+        return allFiles;
+    }
+
+    // Search across all chat histories
+    async searchSessions(query: string): Promise<Array<{ sessionId: string; title: string; matches: string[] }>> {
+        if (!this.storagePath) return [];
+        
+        const results: Array<{ sessionId: string; title: string; matches: string[] }> = [];
+        const queryLower = query.toLowerCase();
+        const workspaceDirs = fs.readdirSync(this.storagePath);
+        
+        for (const wsDir of workspaceDirs) {
+            const chatDir = path.join(this.storagePath, wsDir, 'chatSessions');
+            if (!fs.existsSync(chatDir)) continue;
+            
+            const files = fs.readdirSync(chatDir).filter(f => f.endsWith('.json'));
+            for (const file of files) {
+                try {
+                    const data = JSON.parse(fs.readFileSync(path.join(chatDir, file), 'utf8'));
+                    const matches: string[] = [];
+                    
+                    for (const req of (data.requests || [])) {
+                        const text = req.message?.text || '';
+                        if (text.toLowerCase().includes(queryLower)) {
+                            const snippet = text.slice(0, 100) + (text.length > 100 ? '...' : '');
+                            matches.push(snippet);
+                        }
+                    }
+                    
+                    if (matches.length > 0) {
+                        results.push({
+                            sessionId: file.replace('.json', ''),
+                            title: data.customTitle || 'Untitled',
+                            matches
+                        });
+                    }
+                } catch {}
+            }
+        }
+        return results;
+    }
+
+    // Analyze storage usage
+    async analyzeStorage(): Promise<{
+        totalSize: number;
+        sessionCount: number;
+        stuckCount: number;
+        pendingEditsCount: number;
+        largestSessions: Array<{ sessionId: string; title: string; size: number }>;
+    }> {
+        let totalSize = 0;
+        let sessionCount = 0;
+        let stuckCount = 0;
+        let pendingEditsCount = 0;
+        const sessionSizes: Array<{ sessionId: string; title: string; size: number }> = [];
+        
+        const sessions = await this.listSessions();
+        for (const session of sessions) {
+            sessionCount++;
+            if (session.lastResponseState === 3) stuckCount++;
+            if (session.hasPendingEdits) pendingEditsCount++;
+            
+            // Calculate session size
+            let sessionSize = 0;
+            if (session._ws_dir) {
+                const chatFile = path.join(session._ws_dir, 'chatSessions', `${session.sessionId}.json`);
+                if (fs.existsSync(chatFile)) {
+                    sessionSize += fs.statSync(chatFile).size;
+                }
+                const editDir = path.join(session._ws_dir, 'chatEditingSessions', session.sessionId);
+                if (fs.existsSync(editDir)) {
+                    sessionSize += this.getDirSize(editDir);
+                }
+            }
+            totalSize += sessionSize;
+            sessionSizes.push({ sessionId: session.sessionId, title: session.title || 'Untitled', size: sessionSize });
+        }
+        
+        sessionSizes.sort((a, b) => b.size - a.size);
+        
+        return {
+            totalSize,
+            sessionCount,
+            stuckCount,
+            pendingEditsCount,
+            largestSessions: sessionSizes.slice(0, 10)
+        };
+    }
+
+    private getDirSize(dir: string): number {
+        let size = 0;
+        try {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    size += this.getDirSize(fullPath);
+                } else {
+                    size += fs.statSync(fullPath).size;
+                }
+            }
+        } catch {}
+        return size;
+    }
+
+    // Fix all stuck sessions
+    async fixAllStuck(): Promise<number> {
+        const sessions = await this.listSessions();
+        let fixed = 0;
+        
+        for (const session of sessions) {
+            if (session.lastResponseState === 3) {
+                const success = await this.fixSession(session.sessionId);
+                if (success) fixed++;
+            }
+        }
+        return fixed;
+    }
+
+    // Apply a single pending file to its original location
+    async applyPendingFile(sessionId: string, filePath: string, currentHash: string): Promise<boolean> {
+        const content = await this.getPendingFileContent(sessionId, currentHash);
+        if (!content) return false;
+        
+        try {
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
+            fs.writeFileSync(filePath, content, 'utf8');
+            return true;
+        } catch (error) {
+            console.error('Failed to apply file:', error);
+            return false;
+        }
+    }
 }
